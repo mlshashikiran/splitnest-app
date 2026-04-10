@@ -58,6 +58,7 @@ type SuggestedSettlement = {
 }
 
 const STORAGE_KEY = 'splitnest:v1'
+const CURRENT_USER_KEY = 'splitnest:current-user-id'
 const CATEGORY_OPTIONS: ExpenseCategory[] = ['Water', 'Electricity', 'Misc']
 const SCREEN_META: Array<{ id: Screen; label: string; short: string }> = [
   { id: 'home', label: 'Home', short: 'Overview' },
@@ -303,6 +304,18 @@ function App() {
   const [notice, setNotice] = useState<Notice>(null)
   const [activeScreen, setActiveScreen] = useState<Screen>('home')
   const [activeComposer, setActiveComposer] = useState<Composer>(null)
+  const [currentUserId, setCurrentUserId] = useState(() => {
+    if (typeof window === 'undefined') {
+      return ''
+    }
+
+    return window.localStorage.getItem(CURRENT_USER_KEY) ?? ''
+  })
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null)
+  const [editingSettlementId, setEditingSettlementId] = useState<string | null>(null)
+  const [editingMemberId, setEditingMemberId] = useState<string | null>(null)
+  const [editingMemberName, setEditingMemberName] = useState('')
+  const [editingMemberRole, setEditingMemberRole] = useState<MemberRole>('tenant')
 
   const [setupHouseName, setSetupHouseName] = useState('')
   const [setupMemberName, setSetupMemberName] = useState('')
@@ -335,6 +348,10 @@ function App() {
   }, [data])
 
   useEffect(() => {
+    window.localStorage.setItem(CURRENT_USER_KEY, currentUserId)
+  }, [currentUserId])
+
+  useEffect(() => {
     if (!notice) {
       return undefined
     }
@@ -355,8 +372,16 @@ function App() {
   const selectedSettlementFrom = settlementFrom || data.members[0]?.id || ''
   const selectedSettlementTo =
     settlementTo || data.members[1]?.id || data.members[0]?.id || ''
-  const primaryUser = data.members[0]
-  const primaryUserBalance = balances.find((row) => row.member.id === primaryUser?.id)?.amount ?? 0
+  const defaultCurrentUser =
+    data.members.find((member) => member.role === 'owner') ?? data.members[0]
+  const selectedCurrentUserId = data.members.some((member) => member.id === currentUserId)
+    ? currentUserId
+    : defaultCurrentUser?.id ?? ''
+  const currentUser =
+    data.members.find((member) => member.id === selectedCurrentUserId) ?? defaultCurrentUser
+  const isOwner = currentUser?.role === 'owner'
+  const primaryUserBalance =
+    balances.find((row) => row.member.id === currentUser?.id)?.amount ?? 0
 
   const filteredExpenses = data.expenses
     .filter((expense) => {
@@ -384,6 +409,37 @@ function App() {
     setNotice({ tone, text })
   }
 
+  function ensureOwner(message = 'Only the owner can manage tenants and household records.') {
+    if (isOwner) {
+      return true
+    }
+
+    showMessage('error', message)
+    return false
+  }
+
+  function resetExpenseForm() {
+    setEditingExpenseId(null)
+    setExpenseTitle('')
+    setExpenseAmount('')
+    setExpensePaidBy(currentUser?.id ?? data.members[0]?.id ?? '')
+    setExpenseDate(today)
+    setExpenseCategory('Water')
+  }
+
+  function resetSettlementForm() {
+    setEditingSettlementId(null)
+    setSettlementAmount('')
+    setSettlementDate(today)
+    setSettlementFrom(currentUser?.id ?? data.members[0]?.id ?? '')
+
+    const fallbackRecipient =
+      data.members.find((member) => member.id !== (currentUser?.id ?? data.members[0]?.id))?.id ??
+      data.members[0]?.id ??
+      ''
+    setSettlementTo(fallbackRecipient)
+  }
+
   function openComposer(composer: Composer, screen?: Screen) {
     if (screen) {
       setActiveScreen(screen)
@@ -393,6 +449,26 @@ function App() {
 
   function closeComposer() {
     setActiveComposer(null)
+    setEditingExpenseId(null)
+    setEditingSettlementId(null)
+  }
+
+  function startExpenseCreate(screen?: Screen) {
+    if (!ensureOwner()) {
+      return
+    }
+
+    resetExpenseForm()
+    openComposer('expense', screen)
+  }
+
+  function startSettlementCreate(screen?: Screen) {
+    if (!ensureOwner()) {
+      return
+    }
+
+    resetSettlementForm()
+    openComposer('settlement', screen)
   }
 
   function addSetupMember() {
@@ -425,18 +501,30 @@ function App() {
       return
     }
 
+    const firstOwner = setupMembers.find((member) => member.role === 'owner')
+
+    if (!firstOwner) {
+      showMessage('error', 'Add at least one owner so the house has a manager account.')
+      return
+    }
+
     setData({
       houseName: setupHouseName.trim(),
       members: setupMembers,
       expenses: [],
       settlements: [],
     })
+    setCurrentUserId(firstOwner.id)
     setActiveScreen('home')
     showMessage('success', 'Household created. You can start logging expenses now.')
   }
 
   function addMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+
+    if (!ensureOwner()) {
+      return
+    }
 
     if (!memberName.trim()) {
       showMessage('error', 'Enter a member name before saving.')
@@ -460,6 +548,11 @@ function App() {
 
   function addExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+
+    if (!ensureOwner()) {
+      return
+    }
+
     const parsedAmount = Number.parseFloat(expenseAmount)
 
     if (
@@ -474,29 +567,51 @@ function App() {
 
     setData((current) => ({
       ...current,
-      expenses: [
-        {
-          id: createId('expense'),
-          title: expenseTitle.trim(),
-          amount: parsedAmount,
-          paidByMemberId: selectedExpensePayer,
-          date: expenseDate,
-          category: expenseCategory,
-          splitAmongMemberIds: current.members.map((member) => member.id),
-        },
-        ...current.expenses,
-      ],
+      expenses: editingExpenseId
+        ? current.expenses.map((expense) =>
+            expense.id === editingExpenseId
+              ? {
+                  ...expense,
+                  title: expenseTitle.trim(),
+                  amount: parsedAmount,
+                  paidByMemberId: selectedExpensePayer,
+                  date: expenseDate,
+                  category: expenseCategory,
+                  splitAmongMemberIds: current.members.map((member) => member.id),
+                }
+              : expense,
+          )
+        : [
+            {
+              id: createId('expense'),
+              title: expenseTitle.trim(),
+              amount: parsedAmount,
+              paidByMemberId: selectedExpensePayer,
+              date: expenseDate,
+              category: expenseCategory,
+              splitAmongMemberIds: current.members.map((member) => member.id),
+            },
+            ...current.expenses,
+          ],
     }))
-    setExpenseTitle('')
-    setExpenseAmount('')
-    setExpenseCategory('Water')
+    resetExpenseForm()
     closeComposer()
     setActiveScreen('expenses')
-    showMessage('success', 'Expense saved and split equally across the house.')
+    showMessage(
+      'success',
+      editingExpenseId
+        ? 'Expense updated successfully.'
+        : 'Expense saved and split equally across the house.',
+    )
   }
 
   function addSettlement(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+
+    if (!ensureOwner()) {
+      return
+    }
+
     const parsedAmount = Number.parseFloat(settlementAmount)
 
     if (
@@ -512,33 +627,194 @@ function App() {
 
     setData((current) => ({
       ...current,
-      settlements: [
-        {
-          id: createId('settlement'),
-          fromMemberId: selectedSettlementFrom,
-          toMemberId: selectedSettlementTo,
-          amount: parsedAmount,
-          date: settlementDate,
-        },
-        ...current.settlements,
-      ],
+      settlements: editingSettlementId
+        ? current.settlements.map((settlement) =>
+            settlement.id === editingSettlementId
+              ? {
+                  ...settlement,
+                  fromMemberId: selectedSettlementFrom,
+                  toMemberId: selectedSettlementTo,
+                  amount: parsedAmount,
+                  date: settlementDate,
+                }
+              : settlement,
+          )
+        : [
+            {
+              id: createId('settlement'),
+              fromMemberId: selectedSettlementFrom,
+              toMemberId: selectedSettlementTo,
+              amount: parsedAmount,
+              date: settlementDate,
+            },
+            ...current.settlements,
+          ],
     }))
-    setSettlementAmount('')
+    resetSettlementForm()
     closeComposer()
     setActiveScreen('settle')
-    showMessage('success', 'Settlement recorded and balances updated.')
+    showMessage(
+      'success',
+      editingSettlementId
+        ? 'Settlement updated successfully.'
+        : 'Settlement recorded and balances updated.',
+    )
   }
 
   function applySuggestedSettlement(item: SuggestedSettlement) {
+    if (!ensureOwner()) {
+      return
+    }
+
     setSettlementFrom(item.fromMember.id)
     setSettlementTo(item.toMember.id)
     setSettlementAmount(item.amount.toFixed(2))
+    setEditingSettlementId(null)
     setSettlementDate(today)
     openComposer('settlement', 'settle')
   }
 
+  function startExpenseEdit(expense: Expense) {
+    if (!ensureOwner()) {
+      return
+    }
+
+    setEditingExpenseId(expense.id)
+    setExpenseTitle(expense.title)
+    setExpenseAmount(expense.amount.toString())
+    setExpensePaidBy(expense.paidByMemberId)
+    setExpenseDate(expense.date)
+    setExpenseCategory(expense.category)
+    openComposer('expense', 'expenses')
+  }
+
+  function startSettlementEdit(settlement: Settlement) {
+    if (!ensureOwner()) {
+      return
+    }
+
+    setEditingSettlementId(settlement.id)
+    setSettlementFrom(settlement.fromMemberId)
+    setSettlementTo(settlement.toMemberId)
+    setSettlementAmount(settlement.amount.toString())
+    setSettlementDate(settlement.date)
+    openComposer('settlement', 'settle')
+  }
+
+  function deleteExpense(expenseId: string) {
+    if (!ensureOwner()) {
+      return
+    }
+
+    if (!window.confirm('Delete this expense record?')) {
+      return
+    }
+
+    setData((current) => ({
+      ...current,
+      expenses: current.expenses.filter((expense) => expense.id !== expenseId),
+    }))
+    showMessage('success', 'Expense deleted.')
+  }
+
+  function deleteSettlement(settlementId: string) {
+    if (!ensureOwner()) {
+      return
+    }
+
+    if (!window.confirm('Delete this settlement record?')) {
+      return
+    }
+
+    setData((current) => ({
+      ...current,
+      settlements: current.settlements.filter((settlement) => settlement.id !== settlementId),
+    }))
+    showMessage('success', 'Settlement deleted.')
+  }
+
+  function startMemberEdit(member: Member) {
+    if (!ensureOwner('Only the owner can modify tenant details.')) {
+      return
+    }
+
+    setEditingMemberId(member.id)
+    setEditingMemberName(member.name)
+    setEditingMemberRole(member.role)
+  }
+
+  function cancelMemberEdit() {
+    setEditingMemberId(null)
+    setEditingMemberName('')
+    setEditingMemberRole('tenant')
+  }
+
+  function saveMemberEdit(memberId: string) {
+    if (!ensureOwner('Only the owner can modify tenant details.')) {
+      return
+    }
+
+    if (!editingMemberName.trim()) {
+      showMessage('error', 'Tenant name cannot be empty.')
+      return
+    }
+
+    setData((current) => ({
+      ...current,
+      members: current.members.map((member) =>
+        member.id === memberId
+          ? { ...member, name: editingMemberName.trim(), role: editingMemberRole }
+          : member,
+      ),
+    }))
+    cancelMemberEdit()
+    showMessage('success', 'Tenant updated.')
+  }
+
+  function deleteMember(member: Member) {
+    if (!ensureOwner('Only the owner can remove tenants.')) {
+      return
+    }
+
+    if (member.role === 'owner') {
+      showMessage('error', 'Owner records cannot be removed from this screen.')
+      return
+    }
+
+    if (
+      !window.confirm(
+        `Remove ${member.name} and delete all expenses and settlements linked to this tenant?`,
+      )
+    ) {
+      return
+    }
+
+    setData((current) => ({
+      ...current,
+      members: current.members.filter((currentMember) => currentMember.id !== member.id),
+      expenses: current.expenses.filter(
+        (expense) =>
+          expense.paidByMemberId !== member.id &&
+          !expense.splitAmongMemberIds.includes(member.id),
+      ),
+      settlements: current.settlements.filter(
+        (settlement) =>
+          settlement.fromMemberId !== member.id && settlement.toMemberId !== member.id,
+      ),
+    }))
+
+    if (selectedCurrentUserId === member.id) {
+      setCurrentUserId(defaultCurrentUser?.id ?? '')
+    }
+
+    cancelMemberEdit()
+    showMessage('success', 'Tenant and related records removed.')
+  }
+
   function loadDemoData() {
-    setData(buildSampleData())
+    const demoData = buildSampleData()
+    setData(demoData)
+    setCurrentUserId(demoData.members.find((member) => member.role === 'owner')?.id ?? demoData.members[0]?.id ?? '')
     setActiveScreen('home')
     setNotice({
       tone: 'success',
@@ -562,7 +838,9 @@ function App() {
     setSetupMembers([])
     setActiveComposer(null)
     setActiveScreen('home')
+    setCurrentUserId('')
     window.localStorage.removeItem(STORAGE_KEY)
+    window.localStorage.removeItem(CURRENT_USER_KEY)
     showMessage('success', 'Local data cleared.')
   }
 
@@ -580,15 +858,15 @@ function App() {
                   : 'You are settled up'}
             </h1>
             <p className="hero-subtext">
-              Quick view for {primaryUser?.name ?? 'your house'}. Add bills fast, see who
+              Quick view for {currentUser?.name ?? 'your house'}. Add bills fast, see who
               owes what, and close the loop without digging through numbers.
             </p>
           </div>
           <div className="hero-actions">
-            <button className="primary-button" onClick={() => openComposer('expense')}>
+            <button className="primary-button" onClick={() => startExpenseCreate()}>
               Add expense
             </button>
-            <button className="ghost-button" onClick={() => openComposer('settlement')}>
+            <button className="ghost-button" onClick={() => startSettlementCreate()}>
               Record payment
             </button>
           </div>
@@ -604,7 +882,7 @@ function App() {
             <strong>{formatCurrency(monthlySummary.totalExpenses)}</strong>
           </article>
           <article className="mini-panel">
-            <span>Pending</span>
+            <span>{isOwner ? 'Pending' : 'Owner manages'}</span>
             <strong>{formatCurrency(pendingAmount)}</strong>
           </article>
           <article className="mini-panel">
@@ -624,7 +902,11 @@ function App() {
             </button>
           </div>
 
-          {suggestedSettlements.length > 0 ? (
+          {!isOwner ? (
+            <p className="empty-state">
+              You are in tenant view. The owner can record or adjust payments from here.
+            </p>
+          ) : suggestedSettlements.length > 0 ? (
             <div className="feed-list">
               {suggestedSettlements.slice(0, 3).map((item, index) => (
                 <button
@@ -688,9 +970,16 @@ function App() {
               <p className="panel-kicker">Ledger</p>
               <h2>Expenses</h2>
             </div>
-            <button className="primary-button primary-button--compact" onClick={() => openComposer('expense')}>
-              Add expense
-            </button>
+            {isOwner ? (
+              <button
+                className="primary-button primary-button--compact"
+                onClick={() => startExpenseCreate()}
+              >
+                Add expense
+              </button>
+            ) : (
+              <span className="pill">Owner only</span>
+            )}
           </div>
 
           <div className="filter-grid">
@@ -753,6 +1042,22 @@ function App() {
                       {formatCurrency(expense.amount / expense.splitAmongMemberIds.length)} per person
                     </span>
                   </div>
+                  {isOwner ? (
+                    <div className="record-actions">
+                      <button
+                        className="ghost-button ghost-button--small"
+                        onClick={() => startExpenseEdit(expense)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="ghost-button ghost-button--small ghost-button--warn"
+                        onClick={() => deleteExpense(expense.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -773,12 +1078,23 @@ function App() {
               <p className="panel-kicker">Who should pay now</p>
               <h2>Settle up</h2>
             </div>
-            <button className="primary-button primary-button--compact" onClick={() => openComposer('settlement')}>
-              Record payment
-            </button>
+            {isOwner ? (
+              <button
+                className="primary-button primary-button--compact"
+                onClick={() => startSettlementCreate()}
+              >
+                Record payment
+              </button>
+            ) : (
+              <span className="pill">Owner only</span>
+            )}
           </div>
 
-          {suggestedSettlements.length > 0 ? (
+          {!isOwner ? (
+            <p className="empty-state">
+              Owner mode is required to record, edit, or delete settlement records.
+            </p>
+          ) : suggestedSettlements.length > 0 ? (
             <div className="feed-list">
               {suggestedSettlements.map((item, index) => (
                 <button
@@ -819,6 +1135,22 @@ function App() {
                     </p>
                   </div>
                   <span className="pill">{settlement.date}</span>
+                  {isOwner ? (
+                    <div className="record-actions">
+                      <button
+                        className="ghost-button ghost-button--small"
+                        onClick={() => startSettlementEdit(settlement)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="ghost-button ghost-button--small ghost-button--warn"
+                        onClick={() => deleteSettlement(settlement.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -925,11 +1257,71 @@ function App() {
           <div className="member-list">
             {data.members.map((member) => (
               <div className="member-row-card" key={member.id}>
-                <div>
-                  <h3>{member.name}</h3>
-                  <p>{member.role === 'owner' ? 'Owner' : 'Tenant'}</p>
-                </div>
-                <strong>{formatCurrency(balances.find((row) => row.member.id === member.id)?.amount ?? 0)}</strong>
+                {editingMemberId === member.id ? (
+                  <div className="member-editor">
+                    <label className="field">
+                      <span>Name</span>
+                      <input
+                        value={editingMemberName}
+                        onChange={(event) => setEditingMemberName(event.target.value)}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Role</span>
+                      <select
+                        value={editingMemberRole}
+                        onChange={(event) =>
+                          setEditingMemberRole(event.target.value as MemberRole)
+                        }
+                      >
+                        <option value="tenant">Tenant</option>
+                        <option value="owner">Owner</option>
+                      </select>
+                    </label>
+                    <div className="record-actions">
+                      <button
+                        className="ghost-button ghost-button--small"
+                        onClick={() => saveMemberEdit(member.id)}
+                      >
+                        Save
+                      </button>
+                      <button
+                        className="ghost-button ghost-button--small"
+                        onClick={cancelMemberEdit}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <h3>{member.name}</h3>
+                      <p>{member.role === 'owner' ? 'Owner' : 'Tenant'}</p>
+                    </div>
+                    <strong>
+                      {formatCurrency(
+                        balances.find((row) => row.member.id === member.id)?.amount ?? 0,
+                      )}
+                    </strong>
+                  </>
+                )}
+                {isOwner && member.role === 'tenant' && editingMemberId !== member.id ? (
+                  <div className="record-actions">
+                    <button
+                      className="ghost-button ghost-button--small"
+                      onClick={() => startMemberEdit(member)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="ghost-button ghost-button--small ghost-button--warn"
+                      onClick={() => deleteMember(member)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -943,31 +1335,37 @@ function App() {
             </div>
           </div>
 
-          <form className="stack" onSubmit={addMember}>
-            <label className="field">
-              <span>Name</span>
-              <input
-                value={memberName}
-                onChange={(event) => setMemberName(event.target.value)}
-                placeholder="New tenant"
-              />
-            </label>
+          {isOwner ? (
+            <form className="stack" onSubmit={addMember}>
+              <label className="field">
+                <span>Name</span>
+                <input
+                  value={memberName}
+                  onChange={(event) => setMemberName(event.target.value)}
+                  placeholder="New tenant"
+                />
+              </label>
 
-            <label className="field">
-              <span>Role</span>
-              <select
-                value={memberRole}
-                onChange={(event) => setMemberRole(event.target.value as MemberRole)}
-              >
-                <option value="tenant">Tenant</option>
-                <option value="owner">Owner</option>
-              </select>
-            </label>
+              <label className="field">
+                <span>Role</span>
+                <select
+                  value={memberRole}
+                  onChange={(event) => setMemberRole(event.target.value as MemberRole)}
+                >
+                  <option value="tenant">Tenant</option>
+                  <option value="owner">Owner</option>
+                </select>
+              </label>
 
-            <button className="ghost-button" type="submit">
-              Add member
-            </button>
-          </form>
+              <button className="ghost-button" type="submit">
+                Add member
+              </button>
+            </form>
+          ) : (
+            <p className="empty-state">
+              Only the owner can add, edit, or delete tenant profiles.
+            </p>
+          )}
         </article>
 
         <article className="content-panel">
@@ -1096,9 +1494,25 @@ function App() {
             <h2>{SCREEN_META.find((screen) => screen.id === activeScreen)?.label}</h2>
           </div>
           <div className="topbar-actions">
-            <button className="icon-button" onClick={() => openComposer('expense')}>
-              Add
-            </button>
+            <label className="field field--compact-inline">
+              <span>Using as</span>
+              <select
+                value={selectedCurrentUserId}
+                onChange={(event) => setCurrentUserId(event.target.value)}
+              >
+                {data.members.map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="pill">{isOwner ? 'Owner mode' : 'Tenant view'}</span>
+            {isOwner ? (
+              <button className="icon-button" onClick={() => startExpenseCreate()}>
+                Add
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -1110,16 +1524,21 @@ function App() {
 
         <main className="screen-stage">{renderActiveScreen()}</main>
 
-        {(activeScreen === 'home' || activeScreen === 'expenses' || activeScreen === 'settle') && (
+        {isOwner &&
+          (activeScreen === 'home' ||
+            activeScreen === 'expenses' ||
+            activeScreen === 'settle') && (
           <button
             className="floating-action"
             onClick={() =>
-              openComposer(activeScreen === 'settle' ? 'settlement' : 'expense')
+              activeScreen === 'settle'
+                ? startSettlementCreate()
+                : startExpenseCreate()
             }
           >
             {activeScreen === 'settle' ? 'Record payment' : 'Add expense'}
           </button>
-        )}
+          )}
 
         <nav className="bottom-nav" aria-label="Primary">
           {SCREEN_META.map((screen) => (
@@ -1218,7 +1637,7 @@ function App() {
                 </label>
 
                 <button className="primary-button" type="submit">
-                  Save expense
+                  {editingExpenseId ? 'Update expense' : 'Save expense'}
                 </button>
               </form>
             ) : (
@@ -1273,7 +1692,7 @@ function App() {
                 </label>
 
                 <button className="primary-button" type="submit">
-                  Record payment
+                  {editingSettlementId ? 'Update payment' : 'Record payment'}
                 </button>
               </form>
             )}

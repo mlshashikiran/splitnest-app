@@ -46,6 +46,8 @@ button {
 
 .device-frame {
   position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: min(940px, calc(100vh - 32px));
   border-radius: 36px;
   border: 1px solid var(--line);
@@ -106,6 +108,8 @@ button {
 .hero-actions {
   display: flex;
   gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .icon-button,
@@ -173,6 +177,7 @@ button {
 
 .screen-stage {
   padding: 14px 14px 120px;
+  overflow: auto;
 }
 
 .screen-stack {
@@ -273,6 +278,14 @@ button {
   font-size: 0.92rem;
 }
 
+.field--compact-inline {
+  min-width: 140px;
+}
+
+.field--compact-inline span {
+  font-size: 0.72rem;
+}
+
 .field input,
 .field select {
   width: 100%;
@@ -339,6 +352,23 @@ button {
   cursor: pointer;
 }
 
+.record-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.member-editor {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.ghost-button--small {
+  padding: 9px 12px;
+  font-size: 0.86rem;
+}
+
 .feed-meta {
   display: grid;
   gap: 4px;
@@ -390,10 +420,9 @@ button {
 }
 
 .bottom-nav {
-  position: absolute;
-  left: 0;
-  right: 0;
+  position: sticky;
   bottom: 0;
+  z-index: 4;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
@@ -561,6 +590,10 @@ button {
 
   .feed-meta {
     text-align: left;
+  }
+
+  .record-actions {
+    width: 100%;
   }
 
   .bottom-nav {
