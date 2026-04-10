@@ -1,6 +1,5 @@
-const CACHE_NAME = 'splitnest-static-v1'
-const APP_ASSETS = [
-  '/',
+const CACHE_NAME = 'splitnest-static-v2'
+const SHELL_ASSETS = [
   '/manifest.webmanifest',
   '/favicon.svg',
   '/icon-192.svg',
@@ -9,7 +8,7 @@ const APP_ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_ASSETS)),
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)),
   )
   self.skipWaiting()
 })
@@ -32,6 +31,27 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
+  const requestUrl = new URL(event.request.url)
+  const isSameOrigin = requestUrl.origin === self.location.origin
+  const isNavigationRequest =
+    event.request.mode === 'navigate' || event.request.destination === 'document'
+
+  if (isNavigationRequest) {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          const clone = networkResponse.clone()
+          caches.open(CACHE_NAME).then((cache) => cache.put('/', clone))
+          return networkResponse
+        })
+        .catch(async () => {
+          const cachedResponse = await caches.match('/')
+          return cachedResponse || Response.error()
+        }),
+    )
+    return
+  }
+
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
       if (cachedResponse) {
@@ -40,10 +60,7 @@ self.addEventListener('fetch', (event) => {
 
       return fetch(event.request)
         .then((networkResponse) => {
-          if (
-            event.request.url.startsWith(self.location.origin) &&
-            networkResponse.ok
-          ) {
+          if (isSameOrigin && networkResponse.ok) {
             const clone = networkResponse.clone()
             caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone))
           }
