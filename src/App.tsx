@@ -368,20 +368,22 @@ function App() {
     .reduce((sum, row) => sum + Math.abs(row.amount), 0) / 2
   const settledAmount = data.settlements.reduce((sum, settlement) => sum + settlement.amount, 0)
   const monthlySummary = getMonthlySummary(data, summaryMonth)
-  const selectedExpensePayer = expensePaidBy || data.members[0]?.id || ''
-  const selectedSettlementFrom = settlementFrom || data.members[0]?.id || ''
+  const ownerMember = data.members.find((member) => member.role === 'owner') ?? data.members[0]
+  const currentUser = data.members.find((member) => member.id === currentUserId) ?? null
+  const activeMember = currentUser ?? ownerMember
+  const isAuthenticated = Boolean(currentUser)
+  const selectedExpensePayer = expensePaidBy || activeMember?.id || data.members[0]?.id || ''
+  const selectedSettlementFrom = settlementFrom || activeMember?.id || data.members[0]?.id || ''
   const selectedSettlementTo =
-    settlementTo || data.members[1]?.id || data.members[0]?.id || ''
-  const defaultCurrentUser =
-    data.members.find((member) => member.role === 'owner') ?? data.members[0]
-  const selectedCurrentUserId = data.members.some((member) => member.id === currentUserId)
-    ? currentUserId
-    : defaultCurrentUser?.id ?? ''
-  const currentUser =
-    data.members.find((member) => member.id === selectedCurrentUserId) ?? defaultCurrentUser
+    settlementTo ||
+    data.members.find((member) => member.id !== selectedSettlementFrom)?.id ||
+    data.members[1]?.id ||
+    data.members[0]?.id ||
+    ''
   const isOwner = currentUser?.role === 'owner'
   const primaryUserBalance =
-    balances.find((row) => row.member.id === currentUser?.id)?.amount ?? 0
+    balances.find((row) => row.member.id === activeMember?.id)?.amount ?? 0
+  const currentUserRow = balances.find((row) => row.member.id === activeMember?.id)
 
   const filteredExpenses = data.expenses
     .filter((expense) => {
@@ -422,7 +424,7 @@ function App() {
     setEditingExpenseId(null)
     setExpenseTitle('')
     setExpenseAmount('')
-    setExpensePaidBy(currentUser?.id ?? data.members[0]?.id ?? '')
+    setExpensePaidBy(activeMember?.id ?? data.members[0]?.id ?? '')
     setExpenseDate(today)
     setExpenseCategory('Water')
   }
@@ -431,10 +433,11 @@ function App() {
     setEditingSettlementId(null)
     setSettlementAmount('')
     setSettlementDate(today)
-    setSettlementFrom(currentUser?.id ?? data.members[0]?.id ?? '')
+    setSettlementFrom(activeMember?.id ?? data.members[0]?.id ?? '')
 
     const fallbackRecipient =
-      data.members.find((member) => member.id !== (currentUser?.id ?? data.members[0]?.id))?.id ??
+      data.members.find((member) => member.id !== (activeMember?.id ?? data.members[0]?.id))
+        ?.id ??
       data.members[0]?.id ??
       ''
     setSettlementTo(fallbackRecipient)
@@ -803,8 +806,8 @@ function App() {
       ),
     }))
 
-    if (selectedCurrentUserId === member.id) {
-      setCurrentUserId(defaultCurrentUser?.id ?? '')
+    if (currentUserId === member.id) {
+      setCurrentUserId('')
     }
 
     cancelMemberEdit()
@@ -814,12 +817,95 @@ function App() {
   function loadDemoData() {
     const demoData = buildSampleData()
     setData(demoData)
-    setCurrentUserId(demoData.members.find((member) => member.role === 'owner')?.id ?? demoData.members[0]?.id ?? '')
+    setCurrentUserId(
+      demoData.members.find((member) => member.role === 'owner')?.id ??
+        demoData.members[0]?.id ??
+        '',
+    )
     setActiveScreen('home')
     setNotice({
       tone: 'success',
       text: 'Demo household loaded so you can explore the app flow immediately.',
     })
+  }
+
+  function enterHousehold(memberId: string) {
+    setCurrentUserId(memberId)
+    setActiveScreen('home')
+    setActiveComposer(null)
+  }
+
+  function switchMember() {
+    setCurrentUserId('')
+    setActiveComposer(null)
+    setActiveScreen('home')
+  }
+
+  function renderEntryScreen() {
+    return (
+      <div className="app-shell app-shell--setup">
+        <section className="setup-shell entry-shell">
+          <article className="hero-panel hero-panel--setup">
+            <div className="hero-copy-block">
+              <p className="eyebrow">SplitNest</p>
+              <h1>Pick your place in the house ledger.</h1>
+              <p className="hero-subtext">
+                Enter as a tenant or owner to see your balance, recent bills, and the
+                latest settlement suggestions for {data.houseName}.
+              </p>
+            </div>
+            <div className="hero-actions">
+              <span className="pill">{data.members.length} active members</span>
+              <button className="ghost-button" onClick={resetAllData}>
+                Reset household
+              </button>
+            </div>
+          </article>
+
+          {notice ? (
+            <div className={`notice notice--${notice.tone}`} role="status">
+              {notice.text}
+            </div>
+          ) : null}
+
+          <article className="content-panel">
+            <div className="section-head">
+              <div>
+                <p className="panel-kicker">Continue as</p>
+                <h2>Choose your member profile</h2>
+              </div>
+            </div>
+
+            <div className="entry-grid">
+              {data.members.map((member) => {
+                const memberBalance =
+                  balances.find((row) => row.member.id === member.id)?.amount ?? 0
+
+                return (
+                  <button
+                    className="entry-card"
+                    key={member.id}
+                    onClick={() => enterHousehold(member.id)}
+                  >
+                    <div className="entry-avatar" aria-hidden="true">
+                      {member.name.slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="entry-card-copy">
+                      <strong>{member.name}</strong>
+                      <span>{member.role === 'owner' ? 'Owner access' : 'Tenant view'}</span>
+                    </div>
+                    <strong className={memberBalance >= 0 ? 'positive' : 'negative'}>
+                      {memberBalance >= 0 ? '+' : '-'}
+                      {formatCurrency(Math.abs(memberBalance))}
+                    </strong>
+                  </button>
+                )
+              })}
+            </div>
+          </article>
+        </section>
+      </div>
+    )
   }
 
   function resetAllData() {
@@ -878,16 +964,16 @@ function App() {
             <strong>{formatCurrency(totalExpenses)}</strong>
           </article>
           <article className="mini-panel">
-            <span>This month</span>
-            <strong>{formatCurrency(monthlySummary.totalExpenses)}</strong>
+            <span>Your share</span>
+            <strong>{formatCurrency(currentUserRow?.share ?? 0)}</strong>
           </article>
           <article className="mini-panel">
-            <span>{isOwner ? 'Pending' : 'Owner manages'}</span>
-            <strong>{formatCurrency(pendingAmount)}</strong>
+            <span>You paid</span>
+            <strong>{formatCurrency(currentUserRow?.paid ?? 0)}</strong>
           </article>
           <article className="mini-panel">
-            <span>Settled so far</span>
-            <strong>{formatCurrency(settledAmount)}</strong>
+            <span>{isOwner ? 'Pending' : 'House pending'}</span>
+            <strong>{formatCurrency(isOwner ? pendingAmount : settledAmount)}</strong>
           </article>
         </div>
 
@@ -1485,6 +1571,10 @@ function App() {
     )
   }
 
+  if (!isAuthenticated) {
+    return renderEntryScreen()
+  }
+
   return (
     <div className="app-shell">
       <div className="device-frame">
@@ -1494,20 +1584,13 @@ function App() {
             <h2>{SCREEN_META.find((screen) => screen.id === activeScreen)?.label}</h2>
           </div>
           <div className="topbar-actions">
-            <label className="field field--compact-inline">
-              <span>Using as</span>
-              <select
-                value={selectedCurrentUserId}
-                onChange={(event) => setCurrentUserId(event.target.value)}
-              >
-                {data.members.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className="pill">{isOwner ? 'Owner mode' : 'Tenant view'}</span>
+            <div className="topbar-user">
+              <span className="pill">{currentUser?.name}</span>
+              <span className="pill">{isOwner ? 'Owner mode' : 'Tenant view'}</span>
+            </div>
+            <button className="ghost-button" onClick={switchMember}>
+              Switch member
+            </button>
             {isOwner ? (
               <button className="icon-button" onClick={() => startExpenseCreate()}>
                 Add
