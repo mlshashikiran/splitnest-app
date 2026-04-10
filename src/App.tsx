@@ -4,6 +4,9 @@ import './App.css'
 
 type MemberRole = 'tenant' | 'owner'
 type ExpenseCategory = 'Water' | 'Electricity' | 'Misc'
+type NoticeTone = 'success' | 'error'
+type Screen = 'home' | 'expenses' | 'settle' | 'summary' | 'house'
+type Composer = 'expense' | 'settlement' | null
 
 type Member = {
   id: string
@@ -28,8 +31,6 @@ type Settlement = {
   amount: number
   date: string
 }
-
-type NoticeTone = 'success' | 'error'
 
 type AppData = {
   houseName: string
@@ -58,6 +59,13 @@ type SuggestedSettlement = {
 
 const STORAGE_KEY = 'splitnest:v1'
 const CATEGORY_OPTIONS: ExpenseCategory[] = ['Water', 'Electricity', 'Misc']
+const SCREEN_META: Array<{ id: Screen; label: string; short: string }> = [
+  { id: 'home', label: 'Home', short: 'Overview' },
+  { id: 'expenses', label: 'Expenses', short: 'Ledger' },
+  { id: 'settle', label: 'Settle', short: 'Payback' },
+  { id: 'summary', label: 'Summary', short: 'Month' },
+  { id: 'house', label: 'House', short: 'People' },
+]
 
 const today = new Date().toISOString().slice(0, 10)
 const currentMonth = new Date().toISOString().slice(0, 7)
@@ -259,12 +267,14 @@ function getMonthlySummary(data: AppData, month: string) {
   const monthlySettlements = data.settlements.filter((settlement) =>
     settlement.date.startsWith(month),
   )
+
   const monthlyData: AppData = {
     houseName: data.houseName,
     members: data.members,
     expenses: monthlyExpenses,
     settlements: monthlySettlements,
   }
+
   const balances = calculateBalances(monthlyData)
   const totalExpenses = monthlyExpenses.reduce((sum, expense) => sum + expense.amount, 0)
   const categories = CATEGORY_OPTIONS.map((category) => ({
@@ -284,9 +294,15 @@ function getMonthlySummary(data: AppData, month: string) {
   }
 }
 
+function getMemberName(members: Member[], memberId: string) {
+  return members.find((member) => member.id === memberId)?.name ?? 'Unknown'
+}
+
 function App() {
   const [data, setData] = useState<AppData>(() => loadAppData())
   const [notice, setNotice] = useState<Notice>(null)
+  const [activeScreen, setActiveScreen] = useState<Screen>('home')
+  const [activeComposer, setActiveComposer] = useState<Composer>(null)
 
   const [setupHouseName, setSetupHouseName] = useState('')
   const [setupMemberName, setSetupMemberName] = useState('')
@@ -323,7 +339,7 @@ function App() {
       return undefined
     }
 
-    const timeout = window.setTimeout(() => setNotice(null), 3000)
+    const timeout = window.setTimeout(() => setNotice(null), 2600)
     return () => window.clearTimeout(timeout)
   }, [notice])
 
@@ -332,13 +348,15 @@ function App() {
   const totalExpenses = data.expenses.reduce((sum, expense) => sum + expense.amount, 0)
   const pendingAmount = balances
     .filter((row) => row.amount < -0.01)
-    .reduce((sum, row) => sum + Math.abs(row.amount), 0)
+    .reduce((sum, row) => sum + Math.abs(row.amount), 0) / 2
   const settledAmount = data.settlements.reduce((sum, settlement) => sum + settlement.amount, 0)
   const monthlySummary = getMonthlySummary(data, summaryMonth)
   const selectedExpensePayer = expensePaidBy || data.members[0]?.id || ''
   const selectedSettlementFrom = settlementFrom || data.members[0]?.id || ''
   const selectedSettlementTo =
     settlementTo || data.members[1]?.id || data.members[0]?.id || ''
+  const primaryUser = data.members[0]
+  const primaryUserBalance = balances.find((row) => row.member.id === primaryUser?.id)?.amount ?? 0
 
   const filteredExpenses = data.expenses
     .filter((expense) => {
@@ -354,8 +372,27 @@ function App() {
     })
     .sort((left, right) => right.date.localeCompare(left.date))
 
+  const recentExpenses = [...data.expenses]
+    .sort((left, right) => right.date.localeCompare(left.date))
+    .slice(0, 4)
+
+  const recentSettlements = [...data.settlements]
+    .sort((left, right) => right.date.localeCompare(left.date))
+    .slice(0, 4)
+
   function showMessage(tone: NoticeTone, text: string) {
     setNotice({ tone, text })
+  }
+
+  function openComposer(composer: Composer, screen?: Screen) {
+    if (screen) {
+      setActiveScreen(screen)
+    }
+    setActiveComposer(composer)
+  }
+
+  function closeComposer() {
+    setActiveComposer(null)
   }
 
   function addSetupMember() {
@@ -394,6 +431,7 @@ function App() {
       expenses: [],
       settlements: [],
     })
+    setActiveScreen('home')
     showMessage('success', 'Household created. You can start logging expenses now.')
   }
 
@@ -422,7 +460,6 @@ function App() {
 
   function addExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-
     const parsedAmount = Number.parseFloat(expenseAmount)
 
     if (
@@ -453,12 +490,13 @@ function App() {
     setExpenseTitle('')
     setExpenseAmount('')
     setExpenseCategory('Water')
-    showMessage('success', 'Expense added and split equally across the household.')
+    closeComposer()
+    setActiveScreen('expenses')
+    showMessage('success', 'Expense saved and split equally across the house.')
   }
 
   function addSettlement(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-
     const parsedAmount = Number.parseFloat(settlementAmount)
 
     if (
@@ -486,19 +524,34 @@ function App() {
       ],
     }))
     setSettlementAmount('')
+    closeComposer()
+    setActiveScreen('settle')
     showMessage('success', 'Settlement recorded and balances updated.')
+  }
+
+  function applySuggestedSettlement(item: SuggestedSettlement) {
+    setSettlementFrom(item.fromMember.id)
+    setSettlementTo(item.toMember.id)
+    setSettlementAmount(item.amount.toFixed(2))
+    setSettlementDate(today)
+    openComposer('settlement', 'settle')
   }
 
   function loadDemoData() {
     setData(buildSampleData())
+    setActiveScreen('home')
     setNotice({
       tone: 'success',
-      text: 'Demo household loaded so you can explore the full flow immediately.',
+      text: 'Demo household loaded so you can explore the app flow immediately.',
     })
   }
 
   function resetAllData() {
-    if (!window.confirm('This clears the household, expenses, and settlements stored on this device.')) {
+    if (
+      !window.confirm(
+        'This clears the household, expenses, and settlements stored on this device.',
+      )
+    ) {
       return
     }
 
@@ -507,57 +560,478 @@ function App() {
     setSetupHouseName('')
     setSetupMemberName('')
     setSetupMembers([])
+    setActiveComposer(null)
+    setActiveScreen('home')
     window.localStorage.removeItem(STORAGE_KEY)
     showMessage('success', 'Local data cleared.')
   }
 
-  return (
-    <div className="app-shell">
-      <header className="hero-card">
-        <div>
-          <p className="eyebrow">SplitNest MVP</p>
-          <h1>Shared house expenses without the monthly math headache.</h1>
-          <p className="hero-copy">
-            Track bills, split them equally, record settlements, and keep the whole
-            house aligned. This starter is local-first, installable on Android, and
-            ready for free static hosting on Cloudflare Pages.
-          </p>
-        </div>
-        <div className="hero-side">
-          <div className="hero-stat">
+  function renderHomeScreen() {
+    return (
+      <section className="screen-stack">
+        <article className="hero-panel">
+          <div className="hero-copy-block">
+            <p className="eyebrow">Today in {data.houseName}</p>
+            <h1>
+              {primaryUserBalance < -0.01
+                ? `You owe ${formatCurrency(Math.abs(primaryUserBalance))}`
+                : primaryUserBalance > 0.01
+                  ? `You are owed ${formatCurrency(primaryUserBalance)}`
+                  : 'You are settled up'}
+            </h1>
+            <p className="hero-subtext">
+              Quick view for {primaryUser?.name ?? 'your house'}. Add bills fast, see who
+              owes what, and close the loop without digging through numbers.
+            </p>
+          </div>
+          <div className="hero-actions">
+            <button className="primary-button" onClick={() => openComposer('expense')}>
+              Add expense
+            </button>
+            <button className="ghost-button" onClick={() => openComposer('settlement')}>
+              Record payment
+            </button>
+          </div>
+        </article>
+
+        <div className="overview-grid">
+          <article className="mini-panel">
             <span>Total tracked</span>
             <strong>{formatCurrency(totalExpenses)}</strong>
-          </div>
-          <div className="hero-stat">
-            <span>Members</span>
-            <strong>{data.members.length || 0}</strong>
-          </div>
-          <div className="hero-stat">
+          </article>
+          <article className="mini-panel">
+            <span>This month</span>
+            <strong>{formatCurrency(monthlySummary.totalExpenses)}</strong>
+          </article>
+          <article className="mini-panel">
+            <span>Pending</span>
+            <strong>{formatCurrency(pendingAmount)}</strong>
+          </article>
+          <article className="mini-panel">
             <span>Settled so far</span>
             <strong>{formatCurrency(settledAmount)}</strong>
-          </div>
+          </article>
         </div>
-      </header>
 
-      {notice ? (
-        <div className={`notice notice--${notice.tone}`} role="status">
-          {notice.text}
-        </div>
-      ) : null}
-
-      {data.members.length === 0 ? (
-        <section className="setup-grid">
-          <article className="panel panel--tall">
-            <div className="panel-heading">
-              <div>
-                <p className="panel-kicker">Start here</p>
-                <h2>Create your house group</h2>
-              </div>
-              <button className="ghost-button" onClick={loadDemoData}>
-                Load demo data
-              </button>
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Quick settle</p>
+              <h2>Suggested paybacks</h2>
             </div>
+            <button className="text-button" onClick={() => setActiveScreen('settle')}>
+              Open settle screen
+            </button>
+          </div>
 
+          {suggestedSettlements.length > 0 ? (
+            <div className="feed-list">
+              {suggestedSettlements.slice(0, 3).map((item, index) => (
+                <button
+                  className="feed-card feed-card--action"
+                  key={`${item.fromMember.id}-${item.toMember.id}-${index}`}
+                  onClick={() => applySuggestedSettlement(item)}
+                >
+                  <div>
+                    <h3>{item.fromMember.name}</h3>
+                    <p>Pays {item.toMember.name}</p>
+                  </div>
+                  <strong>{formatCurrency(item.amount)}</strong>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">No paybacks needed right now.</p>
+          )}
+        </article>
+
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Latest activity</p>
+              <h2>Recent expenses</h2>
+            </div>
+            <button className="text-button" onClick={() => setActiveScreen('expenses')}>
+              View all
+            </button>
+          </div>
+
+          {recentExpenses.length > 0 ? (
+            <div className="feed-list">
+              {recentExpenses.map((expense) => (
+                <div className="feed-card" key={expense.id}>
+                  <div>
+                    <h3>{expense.title}</h3>
+                    <p>
+                      {expense.date} · {expense.category} · Paid by{' '}
+                      {getMemberName(data.members, expense.paidByMemberId)}
+                    </p>
+                  </div>
+                  <strong>{formatCurrency(expense.amount)}</strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">No expenses yet. Start with your first bill.</p>
+          )}
+        </article>
+      </section>
+    )
+  }
+
+  function renderExpensesScreen() {
+    return (
+      <section className="screen-stack">
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Ledger</p>
+              <h2>Expenses</h2>
+            </div>
+            <button className="primary-button primary-button--compact" onClick={() => openComposer('expense')}>
+              Add expense
+            </button>
+          </div>
+
+          <div className="filter-grid">
+            <label className="field">
+              <span>Month</span>
+              <input
+                type="month"
+                value={historyMonthFilter}
+                onChange={(event) => setHistoryMonthFilter(event.target.value)}
+              />
+            </label>
+
+            <label className="field">
+              <span>Category</span>
+              <select
+                value={historyCategoryFilter}
+                onChange={(event) =>
+                  setHistoryCategoryFilter(event.target.value as 'All' | ExpenseCategory)
+                }
+              >
+                <option value="All">All</option>
+                {CATEGORY_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="field">
+              <span>Payer</span>
+              <select
+                value={historyMemberFilter}
+                onChange={(event) => setHistoryMemberFilter(event.target.value)}
+              >
+                <option value="all">Everyone</option>
+                {data.members.map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {filteredExpenses.length > 0 ? (
+            <div className="feed-list">
+              {filteredExpenses.map((expense) => (
+                <div className="feed-card" key={expense.id}>
+                  <div>
+                    <h3>{expense.title}</h3>
+                    <p>
+                      {expense.date} · {expense.category} · Paid by{' '}
+                      {getMemberName(data.members, expense.paidByMemberId)}
+                    </p>
+                  </div>
+                  <div className="feed-meta">
+                    <strong>{formatCurrency(expense.amount)}</strong>
+                    <span>
+                      {formatCurrency(expense.amount / expense.splitAmongMemberIds.length)} per person
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">No expenses match this filter yet.</p>
+          )}
+        </article>
+      </section>
+    )
+  }
+
+  function renderSettleScreen() {
+    return (
+      <section className="screen-stack">
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Who should pay now</p>
+              <h2>Settle up</h2>
+            </div>
+            <button className="primary-button primary-button--compact" onClick={() => openComposer('settlement')}>
+              Record payment
+            </button>
+          </div>
+
+          {suggestedSettlements.length > 0 ? (
+            <div className="feed-list">
+              {suggestedSettlements.map((item, index) => (
+                <button
+                  className="feed-card feed-card--action"
+                  key={`${item.fromMember.id}-${item.toMember.id}-${index}`}
+                  onClick={() => applySuggestedSettlement(item)}
+                >
+                  <div>
+                    <h3>{item.fromMember.name}</h3>
+                    <p>Settle with {item.toMember.name}</p>
+                  </div>
+                  <strong>{formatCurrency(item.amount)}</strong>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">Everyone looks settled. Nice.</p>
+          )}
+        </article>
+
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Recorded recently</p>
+              <h2>Recent settlements</h2>
+            </div>
+          </div>
+
+          {recentSettlements.length > 0 ? (
+            <div className="feed-list">
+              {recentSettlements.map((settlement) => (
+                <div className="feed-card" key={settlement.id}>
+                  <div>
+                    <h3>{formatCurrency(settlement.amount)}</h3>
+                    <p>
+                      {getMemberName(data.members, settlement.fromMemberId)} paid{' '}
+                      {getMemberName(data.members, settlement.toMemberId)}
+                    </p>
+                  </div>
+                  <span className="pill">{settlement.date}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">No settlements recorded yet.</p>
+          )}
+        </article>
+      </section>
+    )
+  }
+
+  function renderSummaryScreen() {
+    return (
+      <section className="screen-stack">
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Month at a glance</p>
+              <h2>Summary</h2>
+            </div>
+          </div>
+
+          <label className="field">
+            <span>Month</span>
+            <input
+              type="month"
+              value={summaryMonth}
+              onChange={(event) => setSummaryMonth(event.target.value)}
+            />
+          </label>
+
+          <div className="overview-grid overview-grid--tight">
+            <article className="mini-panel">
+              <span>Total expenses</span>
+              <strong>{formatCurrency(monthlySummary.totalExpenses)}</strong>
+            </article>
+            <article className="mini-panel">
+              <span>Expenses</span>
+              <strong>{monthlySummary.expensesCount}</strong>
+            </article>
+            <article className="mini-panel">
+              <span>Settlements</span>
+              <strong>{monthlySummary.settlementsCount}</strong>
+            </article>
+          </div>
+        </article>
+
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Where the money went</p>
+              <h2>By category</h2>
+            </div>
+          </div>
+          {monthlySummary.categories.length > 0 ? (
+            <div className="line-list">
+              {monthlySummary.categories.map((row) => (
+                <div className="line-row" key={row.category}>
+                  <span>{row.category}</span>
+                  <strong>{formatCurrency(row.total)}</strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">No expenses logged for this month.</p>
+          )}
+        </article>
+
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Per person</p>
+              <h2>Positions</h2>
+            </div>
+          </div>
+          <div className="line-list">
+            {monthlySummary.balances.map((row) => (
+              <div className="line-row" key={row.member.id}>
+                <span>{row.member.name}</span>
+                <strong className={row.amount >= 0 ? 'positive' : 'negative'}>
+                  {row.amount >= 0 ? '+' : '-'}
+                  {formatCurrency(Math.abs(row.amount))}
+                </strong>
+              </div>
+            ))}
+          </div>
+        </article>
+      </section>
+    )
+  }
+
+  function renderHouseScreen() {
+    return (
+      <section className="screen-stack">
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Your household</p>
+              <h2>{data.houseName}</h2>
+            </div>
+            <span className="pill">{data.members.length} members</span>
+          </div>
+
+          <div className="member-list">
+            {data.members.map((member) => (
+              <div className="member-row-card" key={member.id}>
+                <div>
+                  <h3>{member.name}</h3>
+                  <p>{member.role === 'owner' ? 'Owner' : 'Tenant'}</p>
+                </div>
+                <strong>{formatCurrency(balances.find((row) => row.member.id === member.id)?.amount ?? 0)}</strong>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Add someone new</p>
+              <h2>Members</h2>
+            </div>
+          </div>
+
+          <form className="stack" onSubmit={addMember}>
+            <label className="field">
+              <span>Name</span>
+              <input
+                value={memberName}
+                onChange={(event) => setMemberName(event.target.value)}
+                placeholder="New tenant"
+              />
+            </label>
+
+            <label className="field">
+              <span>Role</span>
+              <select
+                value={memberRole}
+                onChange={(event) => setMemberRole(event.target.value as MemberRole)}
+              >
+                <option value="tenant">Tenant</option>
+                <option value="owner">Owner</option>
+              </select>
+            </label>
+
+            <button className="ghost-button" type="submit">
+              Add member
+            </button>
+          </form>
+        </article>
+
+        <article className="content-panel">
+          <div className="section-head">
+            <div>
+              <p className="panel-kicker">Device storage</p>
+              <h2>Local-first for now</h2>
+            </div>
+          </div>
+
+          <p className="body-copy">
+            This version keeps the house ledger on this device so it feels instant and
+            works offline. We can add Cloudflare or Firebase sync next.
+          </p>
+
+          <button className="ghost-button ghost-button--warn" onClick={resetAllData}>
+            Reset local data
+          </button>
+        </article>
+      </section>
+    )
+  }
+
+  function renderActiveScreen() {
+    switch (activeScreen) {
+      case 'expenses':
+        return renderExpensesScreen()
+      case 'settle':
+        return renderSettleScreen()
+      case 'summary':
+        return renderSummaryScreen()
+      case 'house':
+        return renderHouseScreen()
+      case 'home':
+      default:
+        return renderHomeScreen()
+    }
+  }
+
+  if (data.members.length === 0) {
+    return (
+      <div className="app-shell app-shell--setup">
+        <section className="setup-shell">
+          <article className="hero-panel hero-panel--setup">
+            <div className="hero-copy-block">
+              <p className="eyebrow">SplitNest</p>
+              <h1>Set up your shared house in under a minute.</h1>
+              <p className="hero-subtext">
+                Start with a house name, add at least two people, and the app is ready
+                to split bills immediately.
+              </p>
+            </div>
+            <button className="ghost-button" onClick={loadDemoData}>
+              Load demo household
+            </button>
+          </article>
+
+          {notice ? (
+            <div className={`notice notice--${notice.tone}`} role="status">
+              {notice.text}
+            </div>
+          ) : null}
+
+          <article className="content-panel">
             <form className="stack" onSubmit={createHousehold}>
               <label className="field">
                 <span>House name</span>
@@ -568,47 +1042,39 @@ function App() {
                 />
               </label>
 
-              <div className="member-composer">
-                <div className="member-row">
-                  <label className="field">
-                    <span>Member name</span>
-                    <input
-                      value={setupMemberName}
-                      onChange={(event) => setSetupMemberName(event.target.value)}
-                      placeholder="Priya"
-                    />
-                  </label>
+              <div className="setup-composer">
+                <label className="field">
+                  <span>Member name</span>
+                  <input
+                    value={setupMemberName}
+                    onChange={(event) => setSetupMemberName(event.target.value)}
+                    placeholder="Priya"
+                  />
+                </label>
 
-                  <label className="field field--compact">
-                    <span>Role</span>
-                    <select
-                      value={setupMemberRole}
-                      onChange={(event) =>
-                        setSetupMemberRole(event.target.value as MemberRole)
-                      }
-                    >
-                      <option value="tenant">Tenant</option>
-                      <option value="owner">Owner</option>
-                    </select>
-                  </label>
-
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={addSetupMember}
+                <label className="field">
+                  <span>Role</span>
+                  <select
+                    value={setupMemberRole}
+                    onChange={(event) => setSetupMemberRole(event.target.value as MemberRole)}
                   >
-                    Add member
-                  </button>
-                </div>
+                    <option value="tenant">Tenant</option>
+                    <option value="owner">Owner</option>
+                  </select>
+                </label>
 
-                <div className="chip-wrap">
-                  {setupMembers.map((member) => (
-                    <span className="member-chip" key={member.id}>
-                      {member.name}
-                      <em>{member.role}</em>
-                    </span>
-                  ))}
-                </div>
+                <button className="secondary-button" type="button" onClick={addSetupMember}>
+                  Add member
+                </button>
+              </div>
+
+              <div className="member-strip">
+                {setupMembers.map((member) => (
+                  <span className="member-chip" key={member.id}>
+                    {member.name}
+                    <em>{member.role}</em>
+                  </span>
+                ))}
               </div>
 
               <button className="primary-button" type="submit">
@@ -616,110 +1082,80 @@ function App() {
               </button>
             </form>
           </article>
-
-          <article className="panel">
-            <div className="panel-heading">
-              <div>
-                <p className="panel-kicker">Why this stack</p>
-                <h2>Android-friendly and free to host</h2>
-              </div>
-            </div>
-            <ul className="feature-list">
-              <li>Installable PWA works well on Android phones right away.</li>
-              <li>Cloudflare Pages can host this static app on the free tier.</li>
-              <li>Local storage means it already works offline without a backend.</li>
-              <li>We can add Cloudflare D1 or Firebase sync later without rebuilding from scratch.</li>
-            </ul>
-          </article>
         </section>
-      ) : (
-        <>
-          <section className="dashboard-grid">
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="panel-kicker">{data.houseName}</p>
-                  <h2>Balance dashboard</h2>
-                </div>
-                <span className="badge">Live split engine</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="app-shell">
+      <div className="device-frame">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">{data.houseName}</p>
+            <h2>{SCREEN_META.find((screen) => screen.id === activeScreen)?.label}</h2>
+          </div>
+          <div className="topbar-actions">
+            <button className="icon-button" onClick={() => openComposer('expense')}>
+              Add
+            </button>
+          </div>
+        </header>
+
+        {notice ? (
+          <div className={`notice notice--${notice.tone}`} role="status">
+            {notice.text}
+          </div>
+        ) : null}
+
+        <main className="screen-stage">{renderActiveScreen()}</main>
+
+        {(activeScreen === 'home' || activeScreen === 'expenses' || activeScreen === 'settle') && (
+          <button
+            className="floating-action"
+            onClick={() =>
+              openComposer(activeScreen === 'settle' ? 'settlement' : 'expense')
+            }
+          >
+            {activeScreen === 'settle' ? 'Record payment' : 'Add expense'}
+          </button>
+        )}
+
+        <nav className="bottom-nav" aria-label="Primary">
+          {SCREEN_META.map((screen) => (
+            <button
+              key={screen.id}
+              className={screen.id === activeScreen ? 'nav-item nav-item--active' : 'nav-item'}
+              onClick={() => setActiveScreen(screen.id)}
+            >
+              <strong>{screen.label}</strong>
+              <span>{screen.short}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {activeComposer ? (
+        <div className="sheet-backdrop" onClick={closeComposer} role="presentation">
+          <section
+            className="sheet"
+            onClick={(event) => event.stopPropagation()}
+            aria-label={activeComposer === 'expense' ? 'Add expense' : 'Record settlement'}
+          >
+            <div className="sheet-handle" />
+            <div className="section-head">
+              <div>
+                <p className="panel-kicker">
+                  {activeComposer === 'expense' ? 'Quick entry' : 'Quick settle'}
+                </p>
+                <h2>{activeComposer === 'expense' ? 'Add expense' : 'Record payment'}</h2>
               </div>
+              <button className="text-button" onClick={closeComposer}>
+                Close
+              </button>
+            </div>
 
-              <div className="stats-grid">
-                <div className="stat-card">
-                  <span>Household spend</span>
-                  <strong>{formatCurrency(totalExpenses)}</strong>
-                </div>
-                <div className="stat-card">
-                  <span>Pending settlement</span>
-                  <strong>{formatCurrency(pendingAmount / 2)}</strong>
-                </div>
-                <div className="stat-card">
-                  <span>Expenses logged</span>
-                  <strong>{data.expenses.length}</strong>
-                </div>
-              </div>
-
-              <div className="balance-list">
-                {balances.map((row) => (
-                  <div className="balance-card" key={row.member.id}>
-                    <div>
-                      <h3>{row.member.name}</h3>
-                      <p>
-                        {row.member.role === 'owner' ? 'Owner' : 'Tenant'} · Paid{' '}
-                        {formatCurrency(row.paid)}
-                      </p>
-                    </div>
-                    <div className={row.amount >= 0 ? 'amount positive' : 'amount negative'}>
-                      {row.amount >= 0 ? 'Gets back ' : 'Owes '}
-                      {formatCurrency(Math.abs(row.amount))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </article>
-
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="panel-kicker">Settlement helper</p>
-                  <h2>Suggested paybacks</h2>
-                </div>
-              </div>
-
-              {suggestedSettlements.length > 0 ? (
-                <div className="suggestion-list">
-                  {suggestedSettlements.map((item, index) => (
-                    <div className="suggestion-card" key={`${item.fromMember.id}-${index}`}>
-                      <span>{item.fromMember.name}</span>
-                      <strong>{formatCurrency(item.amount)}</strong>
-                      <span>{item.toMember.name}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="empty-state">Everyone is square right now.</p>
-              )}
-
-              <div className="member-strip">
-                {data.members.map((member) => (
-                  <span className="member-chip" key={member.id}>
-                    {member.name}
-                    <em>{member.role}</em>
-                  </span>
-                ))}
-              </div>
-            </article>
-          </section>
-
-          <section className="actions-grid">
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="panel-kicker">Log an expense</p>
-                  <h2>Add shared cost</h2>
-                </div>
-              </div>
-
+            {activeComposer === 'expense' ? (
               <form className="stack" onSubmit={addExpense}>
                 <label className="field">
                   <span>Title</span>
@@ -730,17 +1166,17 @@ function App() {
                   />
                 </label>
 
-                <div className="inline-fields">
-                  <label className="field">
-                    <span>Amount</span>
-                    <input
-                      inputMode="decimal"
-                      value={expenseAmount}
-                      onChange={(event) => setExpenseAmount(event.target.value)}
-                      placeholder="1600"
-                    />
-                  </label>
+                <label className="field">
+                  <span>Amount</span>
+                  <input
+                    inputMode="decimal"
+                    value={expenseAmount}
+                    onChange={(event) => setExpenseAmount(event.target.value)}
+                    placeholder="1600"
+                  />
+                </label>
 
+                <div className="split-fields">
                   <label className="field">
                     <span>Paid by</span>
                     <select
@@ -753,17 +1189,6 @@ function App() {
                         </option>
                       ))}
                     </select>
-                  </label>
-                </div>
-
-                <div className="inline-fields">
-                  <label className="field">
-                    <span>Date</span>
-                    <input
-                      type="date"
-                      value={expenseDate}
-                      onChange={(event) => setExpenseDate(event.target.value)}
-                    />
                   </label>
 
                   <label className="field">
@@ -783,26 +1208,22 @@ function App() {
                   </label>
                 </div>
 
-                <p className="helper-text">
-                  This version splits each expense equally among all current members.
-                </p>
+                <label className="field">
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={expenseDate}
+                    onChange={(event) => setExpenseDate(event.target.value)}
+                  />
+                </label>
 
                 <button className="primary-button" type="submit">
                   Save expense
                 </button>
               </form>
-            </article>
-
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="panel-kicker">Record a payment</p>
-                  <h2>Settle balances</h2>
-                </div>
-              </div>
-
+            ) : (
               <form className="stack" onSubmit={addSettlement}>
-                <div className="inline-fields">
+                <div className="split-fields">
                   <label className="field">
                     <span>Who paid</span>
                     <select
@@ -832,225 +1253,33 @@ function App() {
                   </label>
                 </div>
 
-                <div className="inline-fields">
-                  <label className="field">
-                    <span>Amount</span>
-                    <input
-                      inputMode="decimal"
-                      value={settlementAmount}
-                      onChange={(event) => setSettlementAmount(event.target.value)}
-                      placeholder="500"
-                    />
-                  </label>
-
-                  <label className="field">
-                    <span>Date</span>
-                    <input
-                      type="date"
-                      value={settlementDate}
-                      onChange={(event) => setSettlementDate(event.target.value)}
-                    />
-                  </label>
-                </div>
-
-                <button className="secondary-button" type="submit">
-                  Record settlement
-                </button>
-              </form>
-            </article>
-
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="panel-kicker">Manage members</p>
-                  <h2>Add new people</h2>
-                </div>
-              </div>
-
-              <form className="stack" onSubmit={addMember}>
                 <label className="field">
-                  <span>Name</span>
+                  <span>Amount</span>
                   <input
-                    value={memberName}
-                    onChange={(event) => setMemberName(event.target.value)}
-                    placeholder="New tenant"
+                    inputMode="decimal"
+                    value={settlementAmount}
+                    onChange={(event) => setSettlementAmount(event.target.value)}
+                    placeholder="500"
                   />
                 </label>
 
                 <label className="field">
-                  <span>Role</span>
-                  <select
-                    value={memberRole}
-                    onChange={(event) => setMemberRole(event.target.value as MemberRole)}
-                  >
-                    <option value="tenant">Tenant</option>
-                    <option value="owner">Owner</option>
-                  </select>
-                </label>
-
-                <button className="ghost-button" type="submit">
-                  Add member
-                </button>
-              </form>
-            </article>
-          </section>
-
-          <section className="details-grid">
-            <article className="panel panel--wide">
-              <div className="panel-heading">
-                <div>
-                  <p className="panel-kicker">Expense history</p>
-                  <h2>Filter the ledger</h2>
-                </div>
-              </div>
-
-              <div className="filter-row">
-                <label className="field">
-                  <span>Month</span>
+                  <span>Date</span>
                   <input
-                    type="month"
-                    value={historyMonthFilter}
-                    onChange={(event) => setHistoryMonthFilter(event.target.value)}
+                    type="date"
+                    value={settlementDate}
+                    onChange={(event) => setSettlementDate(event.target.value)}
                   />
                 </label>
 
-                <label className="field">
-                  <span>Category</span>
-                  <select
-                    value={historyCategoryFilter}
-                    onChange={(event) =>
-                      setHistoryCategoryFilter(
-                        event.target.value as 'All' | ExpenseCategory,
-                      )
-                    }
-                  >
-                    <option value="All">All</option>
-                    {CATEGORY_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span>Payer</span>
-                  <select
-                    value={historyMemberFilter}
-                    onChange={(event) => setHistoryMemberFilter(event.target.value)}
-                  >
-                    <option value="all">Everyone</option>
-                    {data.members.map((member) => (
-                      <option key={member.id} value={member.id}>
-                        {member.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <div className="ledger">
-                {filteredExpenses.length > 0 ? (
-                  filteredExpenses.map((expense) => {
-                    const payer = data.members.find(
-                      (member) => member.id === expense.paidByMemberId,
-                    )
-                    const share = expense.amount / expense.splitAmongMemberIds.length
-
-                    return (
-                      <div className="ledger-row" key={expense.id}>
-                        <div>
-                          <h3>{expense.title}</h3>
-                          <p>
-                            {expense.date} · {expense.category} · Paid by{' '}
-                            {payer?.name ?? 'Unknown'}
-                          </p>
-                        </div>
-                        <div className="ledger-amount">
-                          <strong>{formatCurrency(expense.amount)}</strong>
-                          <span>{formatCurrency(share)} per person</span>
-                        </div>
-                      </div>
-                    )
-                  })
-                ) : (
-                  <p className="empty-state">No expenses match these filters yet.</p>
-                )}
-              </div>
-            </article>
-
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="panel-kicker">Monthly summary</p>
-                  <h2>{summaryMonth}</h2>
-                </div>
-              </div>
-
-              <label className="field">
-                <span>Month</span>
-                <input
-                  type="month"
-                  value={summaryMonth}
-                  onChange={(event) => setSummaryMonth(event.target.value)}
-                />
-              </label>
-
-              <div className="summary-stack">
-                <div className="summary-card">
-                  <span>Total expenses</span>
-                  <strong>{formatCurrency(monthlySummary.totalExpenses)}</strong>
-                </div>
-                <div className="summary-card">
-                  <span>Expenses logged</span>
-                  <strong>{monthlySummary.expensesCount}</strong>
-                </div>
-                <div className="summary-card">
-                  <span>Settlements logged</span>
-                  <strong>{monthlySummary.settlementsCount}</strong>
-                </div>
-              </div>
-
-              <div className="summary-block">
-                <h3>Category totals</h3>
-                {monthlySummary.categories.length > 0 ? (
-                  monthlySummary.categories.map((row) => (
-                    <div className="summary-line" key={row.category}>
-                      <span>{row.category}</span>
-                      <strong>{formatCurrency(row.total)}</strong>
-                    </div>
-                  ))
-                ) : (
-                  <p className="empty-state">No expenses logged for this month.</p>
-                )}
-              </div>
-
-              <div className="summary-block">
-                <h3>Per-person position</h3>
-                {monthlySummary.balances.map((row) => (
-                  <div className="summary-line" key={row.member.id}>
-                    <span>{row.member.name}</span>
-                    <strong>{formatCurrency(row.amount)}</strong>
-                  </div>
-                ))}
-              </div>
-            </article>
+                <button className="primary-button" type="submit">
+                  Record payment
+                </button>
+              </form>
+            )}
           </section>
-
-          <footer className="app-footer">
-            <div>
-              <strong>Offline-first MVP</strong>
-              <p>
-                Your household data is currently stored on this device. The next step
-                can be sync with Cloudflare D1 or Firebase.
-              </p>
-            </div>
-            <button className="ghost-button" onClick={resetAllData}>
-              Reset local data
-            </button>
-          </footer>
-        </>
-      )}
+        </div>
+      ) : null}
     </div>
   )
 }
